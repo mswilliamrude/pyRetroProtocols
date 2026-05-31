@@ -43,3 +43,4 @@ def create_aio(source_script, output_script):
 if __name__ == '__main__':
     create_aio('hslink/hx.py', 'hxaio.py')
     create_aio('hslink/hr.py', 'hraio.py')
+    create_aio('hslink/hs.py', 'hsaio.py')

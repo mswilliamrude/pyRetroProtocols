@@ -1,9 +1,9 @@
 import time
 import os
 from ..const import *
-from .structs import ControlMapping, FileHeaderPacket, SequencePacket
+from .structs import ControlMapping, FileHeaderPacket, SequencePacket, ResumeVerifyPacket, ExtNakPacket, FileHeaderPacket, SequencePacket
 from .framer import HSLinkFramer
-from ..tools import unix_to_dos_time
+from ..tools import unix_to_dos_time, dos_to_unix_time, crc32
 import logging
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ class HSLinkSession:
         self.recv_fd = None
         self.recv_batch_index = 0
         self.recv_expected_block = 0
+        self.recv_file_time = 0
         self.files_to_send = []
         self.current_file = None
         self.current_fd = None
@@ -74,7 +75,7 @@ class HSLinkSession:
     def _pump_sender(self):
         """Pumps the sliding window file sender queue."""
         # If we are done, don't pump
-        if self.state == "DONE":
+        if self.state == "DONE" or getattr(self, '_sent_z', False):
             return
             
         # 1. Start a new file if our pipeline is idle
@@ -84,6 +85,7 @@ class HSLinkSession:
                 if self.batch_index > 0:
                     log.info("All files transmitted.")
                     self.framer.send_packet(PACK_TRANSMIT_DONE, b"")
+                    self._sent_z = True
                 # Wait for the peer to send Z to complete
                 return
             self._open_next_file()
@@ -94,13 +96,17 @@ class HSLinkSession:
             if not chunk:
                 break
                 
-            # Frame the Data Payload (Type D: Sequence + Mapping + Data)
+            # Optimization Cascade: Block 0 sends D (Seq+Map+Data). Subsequent blocks send F (Data only).
             seq_bytes = SequencePacket.pack(self.batch_index, self.next_block_num)
-            map_bytes = ControlMapping.pack(XON_CHR, XOFF_CHR, DLE_CHR, START_PACKET_CHR, END_PACKET_CHR)
-            payload = seq_bytes + map_bytes + chunk
-            
-            self.unacked_blocks[self.next_block_num] = payload
-            self.framer.send_packet(PACK_DATA_BLOCK_SMD, payload)
+            if self.next_block_num == 0:
+                map_bytes = ControlMapping.pack(XON_CHR, XOFF_CHR, DLE_CHR, START_PACKET_CHR, END_PACKET_CHR)
+                payload = seq_bytes + map_bytes + chunk
+                self.unacked_blocks[self.next_block_num] = payload
+                self.framer.send_packet(PACK_DATA_BLOCK_SMD, payload)
+            else:
+                self.unacked_blocks[self.next_block_num] = seq_bytes + chunk # Keep seq so NAK resends can use D
+                self.framer.send_packet(PACK_DATA_BLOCK_D, chunk)
+                
             self.next_block_num += 1
 
         # 3. Handle End of File (Once all blocks are sent AND acknowledged)
@@ -175,7 +181,12 @@ class HSLinkSession:
                 nak_block = seq['block']
                 if nak_block in self.unacked_blocks:
                     log.warning(f"Received NAK for block {nak_block}. Resending.")
-                    self.framer.send_packet(PACK_DATA_BLOCK_SMD, self.unacked_blocks[nak_block])
+                    # Always resend using D (Seq+Map+Data) so the receiver explicitly knows the out-of-order sequence
+                    stored_payload = self.unacked_blocks[nak_block]
+                    map_bytes = ControlMapping.pack(XON_CHR, XOFF_CHR, DLE_CHR, START_PACKET_CHR, END_PACKET_CHR)
+                    seq_bytes = stored_payload[:SequencePacket.SIZE]
+                    chunk = stored_payload[SequencePacket.SIZE:]
+                    self.framer.send_packet(PACK_DATA_BLOCK_SMD, seq_bytes + map_bytes + chunk)
                 
         elif pkt_type == PACK_OPEN_FILE:
             header = FileHeaderPacket.unpack(payload)
@@ -183,10 +194,40 @@ class HSLinkSession:
             log.info(f"Peer requested to open file: {filename} ({header['size']} bytes)")
             
             filepath = os.path.join(self.recv_dir, filename)
-            self.recv_fd = open(filepath, 'wb')
             self.recv_file = filepath
             self.recv_batch_index = header['batch']
             self.recv_expected_block = 0
+            self.recv_file_time = dos_to_unix_time(header['time'])
+            
+            # Crash Recovery & Skip Logic
+            if os.path.exists(filepath):
+                st = os.stat(filepath)
+                if st.st_size == header['size']:
+                    log.info(f"File {filename} exists and matches size. Sending SKIP (K).")
+                    self.framer.send_packet(PACK_SKIP_FILE, b"")
+                    return
+                elif st.st_size < header['size']:
+                    log.info(f"File {filename} partially exists. Hashing blocks to send VERIFY (V).")
+                    with open(filepath, 'rb') as f:
+                        count = 0
+                        crcs = bytearray()
+                        while count < 100:
+                            chunk = f.read(MAX_BLOCK_SIZE)
+                            if len(chunk) < MAX_BLOCK_SIZE:
+                                break
+                            crc_val = crc32(chunk)
+                            crcs.extend(crc_val.to_bytes(4, 'little'))
+                            count += 1
+                        
+                        if count > 0:
+                            v_payload = ResumeVerifyPacket.pack_header(0, count) + crcs
+                            self.framer.send_packet(PACK_VERIFY_BLOCK, v_payload)
+                            self.recv_expected_block = count
+                            self.recv_fd = open(filepath, 'ab')
+                            return
+                            
+            # Open fresh
+            self.recv_fd = open(filepath, 'wb')
             
         elif pkt_type == PACK_DATA_BLOCK_SMD:
             # Type D: Sequence + Mapping + Data
@@ -206,11 +247,81 @@ class HSLinkSession:
                 ack_payload = SequencePacket.pack(seq['batch'], seq['block'])
                 self.framer.send_packet(PACK_ACK_BLOCK, ack_payload)
                 
+        elif pkt_type == PACK_DATA_BLOCK_D:
+            # Type F: Data Only (Optimization Cascade)
+            chunk = payload
+            if self.recv_fd:
+                self.recv_fd.write(chunk)
+                
+            ack_payload = SequencePacket.pack(self.recv_batch_index, self.recv_expected_block)
+            self.framer.send_packet(PACK_ACK_BLOCK, ack_payload)
+            self.recv_expected_block += 1
+            
+        elif pkt_type == PACK_EXTNAK_BLOCK:
+            # Sub-Block NAKs (M Packets)
+            # Over TCP, we treat this exactly like a full-block NAK for reliability.
+            header = ExtNakPacket.unpack_header(payload)
+            if header['batch'] == self.batch_index:
+                nak_block = header['block']
+                if nak_block in self.unacked_blocks:
+                    log.warning(f"Received ExtNAK for block {nak_block}. Resending full block.")
+                    stored_payload = self.unacked_blocks[nak_block]
+                    map_bytes = ControlMapping.pack(XON_CHR, XOFF_CHR, DLE_CHR, START_PACKET_CHR, END_PACKET_CHR)
+                    seq_bytes = stored_payload[:SequencePacket.SIZE]
+                    chunk = stored_payload[SequencePacket.SIZE:]
+                    self.framer.send_packet(PACK_DATA_BLOCK_SMD, seq_bytes + map_bytes + chunk)
+                    
+        elif pkt_type == PACK_SKIP_FILE:
+            log.info(f"Peer requested SKIP for file: {self.current_file}")
+            self.unacked_blocks.clear()
+            self.next_block_num = self.total_blocks
+            
+        elif pkt_type == PACK_VERIFY_BLOCK:
+            # Resume verification (V)
+            v_header = ResumeVerifyPacket.unpack_header(payload)
+            base_block = v_header['base_block']
+            count = v_header['count']
+            log.info(f"Peer requested VERIFY for {count} blocks starting at {base_block}.")
+            
+            # Read our local file to verify the CRCs
+            self.current_fd.seek(base_block * MAX_BLOCK_SIZE)
+            verified = 0
+            offset = ResumeVerifyPacket.HEADER_SIZE
+            for _ in range(count):
+                chunk = self.current_fd.read(MAX_BLOCK_SIZE)
+                if not chunk: break
+                expected_crc = int.from_bytes(payload[offset:offset+4], 'little')
+                if crc32(chunk) == expected_crc:
+                    verified += 1
+                    offset += 4
+                else:
+                    break
+                    
+            log.info(f"Verified {verified} blocks. Seeking sender to block {base_block + verified}.")
+            self.next_block_num = base_block + verified
+            self.current_fd.seek(self.next_block_num * MAX_BLOCK_SIZE)
+            self.unacked_blocks.clear()
+            
+            # Send SEEK (S) to align the receiver
+            seq_payload = SequencePacket.pack(self.batch_index, self.next_block_num)
+            self.framer.send_packet(PACK_SEEK_BLOCK, seq_payload)
+            
+        elif pkt_type == PACK_SEEK_BLOCK:
+            seq = SequencePacket.unpack(payload)
+            if seq['batch'] == self.recv_batch_index:
+                log.info(f"Sender seeking to block {seq['block']}")
+                self.recv_expected_block = seq['block']
+                
         elif pkt_type == PACK_CLOSE_FILE:
             if self.recv_fd:
                 self.recv_fd.close()
                 self.recv_fd = None
                 log.info(f"File {self.recv_file} successfully received and closed.")
+                if self.recv_file_time:
+                    try:
+                        os.utime(self.recv_file, (time.time(), self.recv_file_time))
+                    except Exception as e:
+                        log.warning(f"Could not apply DOS timestamp to {self.recv_file}: {e}")
                 self.recv_file = None
                 
         elif pkt_type == PACK_TRANSMIT_DONE:

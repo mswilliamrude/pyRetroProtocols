@@ -16,6 +16,7 @@ def main():
         
     transport = StdioTransport()
     session = HSLinkSession(transport)
+    session.recv_dir = args.directory
     
     print("HS/Link receiver initialized", file=sys.stderr)
     session.loop()

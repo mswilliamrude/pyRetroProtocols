@@ -44,3 +44,17 @@ def unix_to_dos_time(timestamp: float) -> int:
     dos_date = (year << 9) | (t.tm_mon << 5) | t.tm_mday
     dos_time = (t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec // 2)
     return (dos_date << 16) | dos_time
+
+def dos_to_unix_time(dos_time: int) -> float:
+    dos_date = (dos_time >> 16) & 0xFFFF
+    dos_t = dos_time & 0xFFFF
+    year = ((dos_date >> 9) & 0x7F) + 1980
+    month = max(1, (dos_date >> 5) & 0x0F)
+    day = max(1, dos_date & 0x1F)
+    hour = (dos_t >> 11) & 0x1F
+    minute = (dos_t >> 5) & 0x3F
+    second = min(59, (dos_t & 0x1F) * 2)
+    try:
+        return time.mktime((year, month, day, hour, minute, second, 0, 0, -1))
+    except (ValueError, OverflowError):
+        return time.time()

@@ -116,6 +116,11 @@ class ExtNakPacket:
     def pack_header(cls, batch: int, block: int, nak_reason: int, errlsr: int = 0, errcsip: int = 0):
         return struct.pack(cls.HEADER_FORMAT, batch, block, nak_reason, errlsr, errcsip)
 
+    @classmethod
+    def unpack_header(cls, data):
+        unpacked = struct.unpack(cls.HEADER_FORMAT, data[:cls.HEADER_SIZE])
+        return {'batch': unpacked[0], 'block': unpacked[1], 'nak_reason': unpacked[2]}
+
 
 class ResumeVerifyPacket:
     """
@@ -131,4 +136,9 @@ class ResumeVerifyPacket:
     @classmethod
     def pack_header(cls, base_block: int, count: int):
         return struct.pack(cls.HEADER_FORMAT, base_block, count)
+
+    @classmethod
+    def unpack_header(cls, data):
+        unpacked = struct.unpack(cls.HEADER_FORMAT, data[:cls.HEADER_SIZE])
+        return {'base_block': unpacked[0], 'count': unpacked[1]}
 
