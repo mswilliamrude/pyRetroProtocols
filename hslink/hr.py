@@ -2,10 +2,11 @@
 import sys
 import argparse
 import logging
-from protocol.hslink import HSLink
+from transport import StdioTransport
+from protocol.hslink import HSLinkSession
 
 def main():
-    parser = argparse.ArgumentParser(description="Receive files using the HS/Link protocol")
+    parser = argparse.ArgumentParser(description="Receive files over HS/Link")
     parser.add_argument("--directory", default=".", help="Directory to save received files")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
@@ -13,7 +14,11 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
         
+    transport = StdioTransport()
+    session = HSLinkSession(transport)
+    
     print("HS/Link receiver initialized", file=sys.stderr)
+    session.loop()
     
 if __name__ == '__main__':
     main()

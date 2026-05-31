@@ -8,7 +8,9 @@ def create_aio(source_script, output_script):
         'hslink/const.py',
         'hslink/error.py',
         'hslink/tools.py',
-        'hslink/base.py',
+        'hslink/transport.py',
+        'hslink/protocol/structs/structs.py',
+        'hslink/protocol/framer.py',
         'hslink/protocol/hslink.py'
     ]
     
@@ -22,11 +24,12 @@ def create_aio(source_script, output_script):
         
     full_content = all_content + "\n" + cli_content
     
-    # 1. Remove relative imports
+    # Remove relative imports
     full_content = re.sub(r'^from \.+[a-zA-Z0-9_\.]* import .*$', '', full_content, flags=re.MULTILINE)
     full_content = re.sub(r'^from protocol[a-zA-Z0-9_\.]* import .*$', '', full_content, flags=re.MULTILINE)
+    full_content = re.sub(r'^from transport import .*$', '', full_content, flags=re.MULTILINE)
     
-    # 2. Clean up shebangs
+    # Clean up shebangs
     full_content = full_content.replace('#!/usr/bin/env python3\n', '')
     
     header = f"#!/usr/bin/env python3\n# Single-file standalone pure-Python HS/Link implementation ({output_script})\n\n"
