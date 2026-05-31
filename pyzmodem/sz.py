@@ -38,14 +38,15 @@ def main():
 
     import logging
     log_level = logging.DEBUG if args.debug else logging.ERROR
-    logging.basicConfig(level=log_level, format='SZ: %(asctime)s [%(levelname)s] %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.basicConfig(level=log_level, format='SZ: %(asctime)s [%(levelname)s] %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', force=True)
     
     if args.debug:
         # In debug mode, log to a file so it doesn't mess up the terminal
         file_handler = logging.FileHandler('/tmp/pyzmodem_sz_debug.log')
         file_handler.setFormatter(logging.Formatter('SZ: %(asctime)s [%(levelname)s] %(message)s'))
+        # Clear existing handlers from root logger
+        logging.getLogger().handlers = []
         logging.getLogger().addHandler(file_handler)
-        logging.getLogger().propagate = False
         print("\r\n[PyZMODEM] Debug logging enabled. See /tmp/pyzmodem_sz_debug.log on remote machine.\r\n", file=sys.stderr)
     
     print("\r\n[PyZMODEM] Tip: Press Ctrl+X 5 times to abort the transfer at any time.\r\n", file=sys.stderr)

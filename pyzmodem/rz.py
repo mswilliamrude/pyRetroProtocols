@@ -75,8 +75,9 @@ def main():
         # In debug mode, log to a file so it doesn't mess up the terminal
         file_handler = logging.FileHandler('/tmp/pyzmodem_rz_debug.log')
         file_handler.setFormatter(logging.Formatter('RZ: %(asctime)s [%(levelname)s] %(message)s'))
+        # Clear existing handlers from root logger
+        logging.getLogger().handlers = []
         logging.getLogger().addHandler(file_handler)
-        logging.getLogger().propagate = False
         sys.stderr.write("\r\n[PyZMODEM] Debug logging enabled. See /tmp/pyzmodem_rz_debug.log on local machine.\r\n")
     
     if args.command:
