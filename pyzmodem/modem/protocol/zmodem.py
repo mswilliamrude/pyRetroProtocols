@@ -58,9 +58,12 @@ class ZMODEM(Modem):
                 continue
             
             # Send ZFILE header (Hex is fine, or BIN)
-            zf1 = const.ZF1_ZLIB if can_zlib else 0
-            zf3 = const.ZF3_OVERWRITE if overwrite else 0
-            self._send_hex_header([const.ZFILE, 0, 0, zf1, zf3], timeout)
+            zf1 = const.ZF1_ZMCLOB if overwrite else 0
+            zf3 = const.ZF3_ZLIB if can_zlib else 0
+            # Note: _send_hex_header expects [type, f3, f2, f1, f0] order because ZFILE header is ZP0=ZF3...ZP3=ZF0
+            # Wait, no. Standard says ZF3 is at index 0 (which is zfile_header[1] since 0 is frame type).
+            # zfile_header[1] = ZF3, [2] = ZF2, [3] = ZF1, [4] = ZF0.
+            self._send_hex_header([const.ZFILE, zf3, 0, zf1, 0], timeout)
             
             # Send ZFILE data
             # Format: filename \x00 filesize \x00
@@ -568,11 +571,11 @@ class ZMODEM(Modem):
         log.info('Abort to receive a file in %s' % (basedir,))
         pos = 0
 
-        is_zlib = (zfile_header[const.ZP2] & const.ZF1_ZLIB) != 0
+        is_zlib = (zfile_header[const.ZP0] & const.ZF3_ZLIB) != 0 if len(zfile_header) > const.ZP0 else False
         if is_zlib:
             log.info("ZLIB inline decompression enabled for this file")
 
-        force_overwrite = (zfile_header[const.ZP3] & const.ZF3_OVERWRITE) != 0 if len(zfile_header) > const.ZP3 else False
+        force_overwrite = (zfile_header[const.ZP2] & const.ZF1_ZMCLOB) != 0 if len(zfile_header) > const.ZP2 else False
         if force_overwrite:
             log.info("Sender requested forced overwrite for this file")
 
