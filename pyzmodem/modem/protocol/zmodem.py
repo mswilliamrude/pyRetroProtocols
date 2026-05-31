@@ -29,6 +29,7 @@ class ZMODEM(Modem):
         
         # 2. Wait for ZRINIT
         kind, header = None, None
+        peer_zf1 = 0
         while True:
             res = self._recv_header(timeout)
             if res is const.TIMEOUT:
@@ -36,7 +37,12 @@ class ZMODEM(Modem):
                 return False
             if res and res[0] == const.ZRINIT:
                 header = res
+                peer_zf1 = header[const.ZP2]
                 break
+                
+        can_zlib = (peer_zf1 & const.ZF1_CANZLIB) != 0
+        if can_zlib:
+            log.info("Receiver supports inline ZLIB compression")
         
         # 3. For each file
         sent_count = 0
@@ -51,7 +57,8 @@ class ZMODEM(Modem):
                 continue
             
             # Send ZFILE header (Hex is fine, or BIN)
-            self._send_hex_header([const.ZFILE, 0, 0, 0, 0], timeout)
+            zf1 = const.ZF1_ZLIB if can_zlib else 0
+            self._send_hex_header([const.ZFILE, 0, 0, zf1, 0], timeout)
             
             # Send ZFILE data
             # Format: filename \x00 filesize \x00
@@ -80,24 +87,33 @@ class ZMODEM(Modem):
             self._send_hex_header([const.ZDATA, offset & 0xff, (offset >> 8) & 0xff, (offset >> 16) & 0xff, (offset >> 24) & 0xff], timeout)
             
             # Stream data
+            import zlib
             total_sent = offset
             with open(filepath, 'rb') as f:
                 f.seek(offset)
+                compressor = zlib.compressobj() if can_zlib else None
+                
                 while True:
-                    chunk = f.read(1024)
+                    chunk = f.read(4096 if can_zlib else 1024)
                     if not chunk:
-                        # Send EOF frame? Actually, just break and send ZEOF header
-                        # Wait, ZMODEM requires the last frame to end with ZCRCE.
-                        # But wait, we can just send ZCRCE with empty data, or end the last chunk with ZCRCE.
-                        # Let's send an empty ZCRCE frame.
+                        if compressor:
+                            comp_chunk = compressor.flush()
+                            if comp_chunk:
+                                for i in range(0, len(comp_chunk), 1024):
+                                    sub = comp_chunk[i:i+1024]
+                                    self._send_16_data(sub, const.ZCRCG, timeout)
                         self._send_16_data(b'', const.ZCRCE, timeout)
                         break
                     
-                    # We stream using ZCRCG (no ack)
-                    # For simplicity, we just send ZCRCG.
-                    # Wait, if we use ZCRCG, we should check for interrupts (ZNAK/ZRPOS).
-                    # But for a basic implementation, we just blast it.
-                    self._send_16_data(chunk, const.ZCRCG, timeout)
+                    if compressor:
+                        comp_chunk = compressor.compress(chunk)
+                        if comp_chunk:
+                            for i in range(0, len(comp_chunk), 1024):
+                                sub = comp_chunk[i:i+1024]
+                                self._send_16_data(sub, const.ZCRCG, timeout)
+                    else:
+                        self._send_16_data(chunk, const.ZCRCG, timeout)
+                        
                     total_sent += len(chunk)
                     if self.progress_callback:
                         self.progress_callback(filename, size, total_sent)
@@ -162,12 +178,14 @@ class ZMODEM(Modem):
         # Loop until we established a connection, we expect to receive a
         # different packet than ZRQINIT
         kind = const.TIMEOUT
+        header = None
         while kind in [const.TIMEOUT, const.ZRQINIT]:
             self._send_zrinit(timeout)
             res = self._recv_header(timeout)
             if res is const.TIMEOUT or res is False:
                 kind = const.TIMEOUT
             else:
+                header = res
                 kind = res[0]
 
         log.info('ZMODEM connection established')
@@ -176,7 +194,7 @@ class ZMODEM(Modem):
         # Receive files
         while kind != const.ZFIN:
             if kind == const.ZFILE:
-                if self._recv_file(basedir, timeout, retry) is not False:
+                if self._recv_file(header, basedir, timeout, retry) is not False:
                     file_count += 1
                 kind = const.TIMEOUT
             elif kind == const.ZFIN:
@@ -192,6 +210,7 @@ class ZMODEM(Modem):
                 if res is const.TIMEOUT or res is False:
                     kind = const.TIMEOUT
                 else:
+                    header = res
                     kind = res[0]
 
         # Acknowledge the ZFIN
@@ -542,9 +561,14 @@ class ZMODEM(Modem):
                 return const.TIMEOUT
             return char - 48
 
-    def _recv_file(self, basedir, timeout, retry):
+    def _recv_file(self, zfile_header, basedir, timeout, retry):
+        import zlib
         log.info('Abort to receive a file in %s' % (basedir,))
         pos = 0
+
+        is_zlib = (zfile_header[const.ZP2] & const.ZF1_ZLIB) != 0
+        if is_zlib:
+            log.info("ZLIB inline decompression enabled for this file")
 
         # Read the data subpacket containing the file information
         kind, data = self._recv_data(pos, timeout, ack=False)
@@ -596,11 +620,19 @@ class ZMODEM(Modem):
             kind = header[0]
             
             if kind == const.ZDATA:
+                decompressor = zlib.decompressobj() if is_zlib else None
                 # Read data subpackets
                 frame_kind = const.FRAMEOK
                 while frame_kind == const.FRAMEOK:
                     frame_kind, chunk = self._recv_data(fp.tell(), timeout)
                     if frame_kind in [const.ENDOFFRAME, const.FRAMEOK]:
+                        if decompressor:
+                            try:
+                                chunk = decompressor.decompress(chunk)
+                            except zlib.error as e:
+                                log.error(f"Zlib decompression failed: {e}")
+                                self._send_pos_header(const.ZRPOS, fp.tell(), timeout)
+                                break
                         fp.write(chunk)
                         total_size += len(chunk)
                         if self.progress_callback:
@@ -619,8 +651,11 @@ class ZMODEM(Modem):
         speed = (total_size / (time.time() - start))
         log.info('Receiving file "%s" done at %.02f bps' % (filename, speed))
 
-        # Update file metadata
+        # Truncate to exact size specified in ZFILE header to strip any trailing ZMODEM frame padding
+        fp.truncate(size)
         fp.close()
+        
+        # Update file metadata
         mtime = time.mktime(date.timetuple())
         os.utime(filepath, (mtime, mtime))
 
@@ -714,6 +749,6 @@ class ZMODEM(Modem):
 
     def _send_zrinit(self, timeout):
         log.debug('Sending ZRINIT header')
-        header = [const.ZRINIT, 0, 0, 0, 4 | const.ZF0_CANFDX |
+        header = [const.ZRINIT, 0, 0, const.ZF1_CANZLIB, 4 | const.ZF0_CANFDX |
                   const.ZF0_CANOVIO | const.ZF0_CANFC32]
         self._send_hex_header(header, timeout)
