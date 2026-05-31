@@ -11,9 +11,14 @@ class ZMODEM(Modem):
     ZMODEM protocol implementation, expects an object to read from and an
     object to write to.
     '''
+    
+    def __init__(self, getc, putc, progress_callback=None, compress=False):
+        super().__init__(getc, putc)
+        self.progress_callback = progress_callback
+        self.compress_enabled = compress
 
 
-    def send(self, files, retry=16, timeout=60):
+    def send(self, files, retry=16, timeout=60, overwrite=False):
         '''
         Send one or more files using ZMODEM protocol.
         files is a list of file paths.
@@ -25,6 +30,7 @@ class ZMODEM(Modem):
         
         # 2. Wait for ZRINIT
         kind, header = None, None
+        peer_zf1 = 0
         while True:
             res = self._recv_header(timeout)
             if res is const.TIMEOUT:
@@ -32,19 +38,32 @@ class ZMODEM(Modem):
                 return False
             if res and res[0] == const.ZRINIT:
                 header = res
+                peer_zf1 = header[const.ZP2]
                 break
+                
+        can_zlib = (peer_zf1 & const.ZF1_CANZLIB) != 0 and self.compress_enabled
+        if can_zlib:
+            log.info("Receiver supports inline ZLIB compression")
         
         # 3. For each file
+        sent_count = 0
         for filepath in files:
             try:
                 size = os.path.getsize(filepath)
                 filename = os.path.basename(filepath)
             except Exception as e:
                 log.error("Cannot read file %s: %s", filepath, e)
+                import sys
+                print(f"\r\n[ERROR] Cannot read file {filepath}: {e}\r\n", file=sys.stderr)
                 continue
             
             # Send ZFILE header (Hex is fine, or BIN)
-            self._send_hex_header([const.ZFILE, 0, 0, 0, 0], timeout)
+            zf1 = const.ZF1_ZMCLOB if overwrite else 0
+            zf3 = const.ZF3_ZLIB if can_zlib else 0
+            # Note: _send_hex_header expects [type, f3, f2, f1, f0] order because ZFILE header is ZP0=ZF3...ZP3=ZF0
+            # Wait, no. Standard says ZF3 is at index 0 (which is zfile_header[1] since 0 is frame type).
+            # zfile_header[1] = ZF3, [2] = ZF2, [3] = ZF1, [4] = ZF0.
+            self._send_hex_header([const.ZFILE, zf3, 0, zf1, 0], timeout)
             
             # Send ZFILE data
             # Format: filename \x00 filesize \x00
@@ -73,23 +92,36 @@ class ZMODEM(Modem):
             self._send_hex_header([const.ZDATA, offset & 0xff, (offset >> 8) & 0xff, (offset >> 16) & 0xff, (offset >> 24) & 0xff], timeout)
             
             # Stream data
+            import zlib
+            total_sent = offset
             with open(filepath, 'rb') as f:
                 f.seek(offset)
+                compressor = zlib.compressobj() if can_zlib else None
+                
                 while True:
-                    chunk = f.read(1024)
+                    chunk = f.read(4096 if can_zlib else 1024)
                     if not chunk:
-                        # Send EOF frame? Actually, just break and send ZEOF header
-                        # Wait, ZMODEM requires the last frame to end with ZCRCE.
-                        # But wait, we can just send ZCRCE with empty data, or end the last chunk with ZCRCE.
-                        # Let's send an empty ZCRCE frame.
+                        if compressor:
+                            comp_chunk = compressor.flush()
+                            if comp_chunk:
+                                for i in range(0, len(comp_chunk), 1024):
+                                    sub = comp_chunk[i:i+1024]
+                                    self._send_16_data(sub, const.ZCRCG, timeout)
                         self._send_16_data(b'', const.ZCRCE, timeout)
                         break
                     
-                    # We stream using ZCRCG (no ack)
-                    # For simplicity, we just send ZCRCG.
-                    # Wait, if we use ZCRCG, we should check for interrupts (ZNAK/ZRPOS).
-                    # But for a basic implementation, we just blast it.
-                    self._send_16_data(chunk, const.ZCRCG, timeout)
+                    if compressor:
+                        comp_chunk = compressor.compress(chunk)
+                        if comp_chunk:
+                            for i in range(0, len(comp_chunk), 1024):
+                                sub = comp_chunk[i:i+1024]
+                                self._send_16_data(sub, const.ZCRCG, timeout)
+                    else:
+                        self._send_16_data(chunk, const.ZCRCG, timeout)
+                        
+                    total_sent += len(chunk)
+                    if self.progress_callback:
+                        self.progress_callback(filename, size, total_sent)
             
             # Send ZEOF
             self._send_hex_header([const.ZEOF, size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff], timeout)
@@ -101,6 +133,8 @@ class ZMODEM(Modem):
                     return False
                 if res and res[0] == const.ZRINIT:
                     break
+                    
+            sent_count += 1
 
         # Send ZFIN
         self._send_hex_header([const.ZFIN, 0, 0, 0, 0], timeout)
@@ -116,7 +150,7 @@ class ZMODEM(Modem):
         # Send OO
         self.putc(b'O', timeout)
         self.putc(b'O', timeout)
-        return True
+        return sent_count > 0
 
     def _send_16_data(self, data, frameend, timeout):
         mine = 0
@@ -145,17 +179,18 @@ class ZMODEM(Modem):
         N.B.: currently there are no control on the existence of files, so they
         will be silently overwritten.
         '''
-        self.recv_log_file = open('/tmp/opencode/rz_recv_raw.bin', 'wb')
         
         # Loop until we established a connection, we expect to receive a
         # different packet than ZRQINIT
         kind = const.TIMEOUT
+        header = None
         while kind in [const.TIMEOUT, const.ZRQINIT]:
             self._send_zrinit(timeout)
             res = self._recv_header(timeout)
             if res is const.TIMEOUT or res is False:
                 kind = const.TIMEOUT
             else:
+                header = res
                 kind = res[0]
 
         log.info('ZMODEM connection established')
@@ -164,7 +199,7 @@ class ZMODEM(Modem):
         # Receive files
         while kind != const.ZFIN:
             if kind == const.ZFILE:
-                if self._recv_file(basedir, timeout, retry) is not False:
+                if self._recv_file(header, basedir, timeout, retry) is not False:
                     file_count += 1
                 kind = const.TIMEOUT
             elif kind == const.ZFIN:
@@ -180,6 +215,7 @@ class ZMODEM(Modem):
                 if res is const.TIMEOUT or res is False:
                     kind = const.TIMEOUT
                 else:
+                    header = res
                     kind = res[0]
 
         # Acknowledge the ZFIN
@@ -187,10 +223,13 @@ class ZMODEM(Modem):
         self._send_hex_header([const.ZFIN, 0, 0, 0, 0], timeout)
 
         # Wait for the over and out sequence
+        kind = self._recv(timeout)
         while kind not in [ord('O'), const.TIMEOUT]:
             kind = self._recv(timeout)
 
         if kind is not const.TIMEOUT:
+            # We got the first 'O', wait for the second 'O'
+            kind = self._recv(timeout)
             while kind not in [ord('O'), const.TIMEOUT]:
                 kind = self._recv(timeout)
 
@@ -239,10 +278,16 @@ class ZMODEM(Modem):
         if char == b'':
             return const.TIMEOUT
         if char is not const.TIMEOUT:
-            if hasattr(self, 'recv_log_file'):
-                self.recv_log_file.write(char)
-                self.recv_log_file.flush()
-            char = ord(char)
+            char_val = ord(char)
+            if char_val == 0x18:
+                self._can_count = getattr(self, '_can_count', 0) + 1
+                if self._can_count >= 5:
+                    log.info("Received 5 consecutive CAN (Ctrl+X), aborting")
+                    raise KeyboardInterrupt("Transfer cancelled by peer")
+            else:
+                self._can_count = 0
+                
+            return char_val
         return char
 
     def _recv_data(self, ack_file_pos, timeout, ack=True):
@@ -476,6 +521,14 @@ class ZMODEM(Modem):
         if char == b'\r' or char == b'\x8d' or char == b'\n' or char == b'\x8a':
             # Expect a second one (which we discard)
             self.getc(1, timeout)
+            
+        # Many senders (including us) append XON after \r\n, optionally consume it
+        # Actually it's safer to just do a quick non-blocking read
+        char = self.getc(1, 0.1)
+        if char != b'\x11' and char != b'':
+            # It wasn't XON, but we consumed it. In a robust implementation we'd unget it,
+            # but we can just ignore it or log it.
+            pass
 
         return 5, header
 
@@ -513,9 +566,18 @@ class ZMODEM(Modem):
                 return const.TIMEOUT
             return char - 48
 
-    def _recv_file(self, basedir, timeout, retry):
+    def _recv_file(self, zfile_header, basedir, timeout, retry):
+        import zlib
         log.info('Abort to receive a file in %s' % (basedir,))
         pos = 0
+
+        is_zlib = (zfile_header[const.ZP0] & const.ZF3_ZLIB) != 0 if len(zfile_header) > const.ZP0 else False
+        if is_zlib:
+            log.info("ZLIB inline decompression enabled for this file")
+
+        force_overwrite = (zfile_header[const.ZP2] & const.ZF1_ZMCLOB) != 0 if len(zfile_header) > const.ZP2 else False
+        if force_overwrite:
+            log.info("Sender requested forced overwrite for this file")
 
         # Read the data subpacket containing the file information
         kind, data = self._recv_data(pos, timeout, ack=False)
@@ -530,7 +592,17 @@ class ZMODEM(Modem):
         part = data.split(b'\x00')
         filename = part[0].decode('utf-8', 'replace')
         filepath = os.path.join(basedir, os.path.basename(filename))
-        fp = open(filepath, 'wb')
+        
+        file_size_on_disk = 0
+        if os.path.exists(filepath) and not force_overwrite:
+            file_size_on_disk = os.path.getsize(filepath)
+            fp = open(filepath, 'ab')
+            log.info('File exists, resuming from offset %d' % file_size_on_disk)
+        else:
+            if force_overwrite and os.path.exists(filepath):
+                log.info('File exists, but overwrite requested')
+            fp = open(filepath, 'wb')
+            
         part = part[1].split(b' ')
         log.info('Meta %r' % (part,))
         size = int(part[0])
@@ -547,10 +619,10 @@ class ZMODEM(Modem):
         # Receive contents
         start = time.time()
         kind = None
-        total_size = 0
+        total_size = file_size_on_disk
         
         # Send initial ZRPOS
-        self._send_pos_header(const.ZRPOS, fp.tell(), timeout)
+        self._send_pos_header(const.ZRPOS, file_size_on_disk, timeout)
         
         while True:
             header = self._recv_header(timeout)
@@ -559,13 +631,23 @@ class ZMODEM(Modem):
             kind = header[0]
             
             if kind == const.ZDATA:
+                decompressor = zlib.decompressobj() if is_zlib else None
                 # Read data subpackets
                 frame_kind = const.FRAMEOK
                 while frame_kind == const.FRAMEOK:
                     frame_kind, chunk = self._recv_data(fp.tell(), timeout)
                     if frame_kind in [const.ENDOFFRAME, const.FRAMEOK]:
+                        if decompressor:
+                            try:
+                                chunk = decompressor.decompress(chunk)
+                            except zlib.error as e:
+                                log.error(f"Zlib decompression failed: {e}")
+                                self._send_pos_header(const.ZRPOS, fp.tell(), timeout)
+                                break
                         fp.write(chunk)
                         total_size += len(chunk)
+                        if self.progress_callback:
+                            self.progress_callback(filename, size, total_size)
             elif kind == const.ZEOF:
                 # File EOF reached
                 break
@@ -580,8 +662,11 @@ class ZMODEM(Modem):
         speed = (total_size / (time.time() - start))
         log.info('Receiving file "%s" done at %.02f bps' % (filename, speed))
 
-        # Update file metadata
+        # Truncate to exact size specified in ZFILE header to strip any trailing ZMODEM frame padding
+        fp.truncate(size)
         fp.close()
+        
+        # Update file metadata
         mtime = time.mktime(date.timetuple())
         os.utime(filepath, (mtime, mtime))
 
@@ -675,6 +760,7 @@ class ZMODEM(Modem):
 
     def _send_zrinit(self, timeout):
         log.debug('Sending ZRINIT header')
-        header = [const.ZRINIT, 0, 0, 0, 4 | const.ZF0_CANFDX |
+        zf1 = const.ZF1_CANZLIB if self.compress_enabled else 0
+        header = [const.ZRINIT, 0, 0, zf1, 4 | const.ZF0_CANFDX |
                   const.ZF0_CANOVIO | const.ZF0_CANFC32]
         self._send_hex_header(header, timeout)

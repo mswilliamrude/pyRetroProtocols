@@ -467,3 +467,10 @@ CRC32_MAP = [
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 ]
+
+# Standard ZMODEM Management Options (ZFILE ZF1)
+ZF1_ZMCLOB = 0x04   # Replace existing destination file (Overwrite)
+
+# PyZMODEM custom ZLIB feature flags
+ZF1_CANZLIB = 0x08  # Receiver capability flag in ZRINIT ZF1 (0x08 avoids 0x02 TIMESYNC)
+ZF3_ZLIB = 0x01     # Sender file flag in ZFILE ZF3 (Extended Options)
