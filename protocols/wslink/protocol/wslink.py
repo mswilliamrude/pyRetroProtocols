@@ -10,13 +10,13 @@ from .framer import WSLinkFramer
 log = logging.getLogger(__name__)
 
 class WSLinkSession:
-    def __init__(self, transport):
+    def __init__(self, transport, **kwargs):
         self.transport = transport
         self.framer = WSLinkFramer(transport)
         
         # State
         self.state = "INIT"
-        self.recv_dir = "."
+        self.recv_dir = kwargs.get('recv_dir', '.')
         
         # Sender state
         self.files_to_send = []
@@ -35,9 +35,10 @@ class WSLinkSession:
         self.recv_file_time = 0.0
         
         # Bandwidth & Congestion Control
-        self.block_size = 4096  # Configurable block size
-        self.window_size = 16
-        self.max_window_size = 256
+        self.block_size = kwargs.get('block_size', 4096)
+        self.window_size = kwargs.get('initial_window', 16)
+        self.max_window_size = kwargs.get('max_window', 256)
+        self.arq_timeout = kwargs.get('arq_timeout', 2.0)
         self.block_send_times = {}
         self.rtt_history = []
         
@@ -152,7 +153,7 @@ class WSLinkSession:
             current_time = time.time()
             oldest_block = min(self.unacked_blocks.keys())
             send_time = self.block_send_times.get(oldest_block, current_time)
-            if current_time - send_time > 2.0:
+            if current_time - send_time > self.arq_timeout:
                 log.warning(f"ARQ Timeout! Resending block {oldest_block}. Throttling window.")
                 self.window_size = max(1, self.window_size // 2) # Halve window on timeout
                 
