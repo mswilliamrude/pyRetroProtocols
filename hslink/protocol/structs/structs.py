@@ -48,8 +48,8 @@ class FileHeaderPacket:
         uchar batch;         // file_number batch index
         char  spare[20];
     """
-    # 13s = 13 char bytes, l = 32-bit int, h = 16-bit short, h = 16-bit short, H = 16-bit unsigned short, B = unsigned char, 20s = 20 char bytes
-    FORMAT = '<13slhhHB20s'
+    # 13s = 13 char bytes, l = 32-bit int, h = 16-bit short, h = 16-bit short, I = 32-bit unsigned int, B = unsigned char, 20s = 20 char bytes
+    FORMAT = '<13slhhIB20s'
     SIZE = struct.calcsize(FORMAT)
 
     @classmethod

@@ -1,6 +1,9 @@
+import time
+import os
 from ..const import *
 from .structs import ControlMapping, FileHeaderPacket, SequencePacket
 from .framer import HSLinkFramer
+from ..tools import unix_to_dos_time
 import logging
 
 log = logging.getLogger(__name__)
@@ -17,6 +20,24 @@ class HSLinkSession:
         # Callbacks that external applications can hook into for M2M communication
         self.on_chat_received = None
 
+        # State Machine Core
+        self.state = "INIT"
+        self.last_tx_time = 0
+        
+        # File Sender State (Sliding Window)
+        self.files_to_send = []
+        self.current_file = None
+        self.current_fd = None
+        self.batch_index = 0
+        self.total_blocks = 0
+        self.next_block_num = 0
+        self.unacked_blocks = {}
+        self.window_size = 64  # Maximum packets in-flight (High since TCP handles true flow control)
+
+    def add_files(self, filepaths):
+        """Adds local files to the transmit queue."""
+        self.files_to_send.extend(filepaths)
+
     def send_chat(self, message: bytes):
         """
         Sends an out-of-band M2M message using the Chat Channel ('H' packet).
@@ -31,6 +52,81 @@ class HSLinkSession:
         for pkt_type, payload in self.framer.read_packets():
             self._handle_packet(pkt_type, payload)
 
+        now = time.time()
+        
+        # Handshake sequence loop
+        if self.state == "INIT":
+            if now - self.last_tx_time > 1.0: # Broadcast handshake ping every second
+                log.debug("Sending Handshake (R and Q)...")
+                self.framer.send_packet(PACK_READY, b"")
+                self.framer.send_packet(PACK_READY_RECV, b"")
+                self.last_tx_time = now
+                
+        # Sender File Transfer sequence loop
+        elif self.state == "TRANSFERRING":
+            self._pump_sender()
+
+    def _pump_sender(self):
+        """Pumps the sliding window file sender queue."""
+        # 1. Start a new file if our pipeline is idle
+        if not self.current_file:
+            if not self.files_to_send:
+                if self.state != "DONE":
+                    log.info("All files transmitted.")
+                    self.framer.send_packet(PACK_TRANSMIT_DONE, b"")
+                    self.state = "DONE"
+                return
+            self._open_next_file()
+
+        # 2. Fill the sliding window with packets up to window_size
+        while len(self.unacked_blocks) < self.window_size and self.next_block_num < self.total_blocks:
+            chunk = self.current_fd.read(MAX_BLOCK_SIZE)
+            if not chunk:
+                break
+                
+            # Frame the Data Payload (Type D: Sequence + Mapping + Data)
+            seq_bytes = SequencePacket.pack(self.batch_index, self.next_block_num)
+            map_bytes = ControlMapping.pack(XON_CHR, XOFF_CHR, DLE_CHR, START_PACKET_CHR, END_PACKET_CHR)
+            payload = seq_bytes + map_bytes + chunk
+            
+            self.unacked_blocks[self.next_block_num] = payload
+            self.framer.send_packet(PACK_DATA_BLOCK_SMD, payload)
+            self.next_block_num += 1
+
+        # 3. Handle End of File (Once all blocks are sent AND acknowledged)
+        if self.next_block_num >= self.total_blocks and not self.unacked_blocks:
+            log.info(f"File {self.current_file} successfully transferred.")
+            self.framer.send_packet(PACK_CLOSE_FILE, b"")
+            self.current_fd.close()
+            self.current_file = None
+            self.batch_index += 1
+
+    def _open_next_file(self):
+        """Prepares the File Header for the next file in queue."""
+        filepath = self.files_to_send.pop(0)
+        st = os.stat(filepath)
+        filename = os.path.basename(filepath).encode('utf-8')
+        dos_time = unix_to_dos_time(st.st_mtime)
+        blocks = (st.st_size + MAX_BLOCK_SIZE - 1) // MAX_BLOCK_SIZE if st.st_size > 0 else 0
+        
+        log.info(f"Opening file: {filepath} ({st.st_size} bytes)")
+        
+        header = FileHeaderPacket.pack(
+            name=filename,
+            size=st.st_size,
+            blocks=blocks,
+            block_size=MAX_BLOCK_SIZE,
+            time_dos=dos_time,
+            batch=self.batch_index
+        )
+        
+        self.framer.send_packet(PACK_OPEN_FILE, header)
+        self.current_file = filepath
+        self.current_fd = open(filepath, 'rb')
+        self.total_blocks = blocks
+        self.next_block_num = 0
+        self.unacked_blocks.clear()
+
     def _handle_packet(self, pkt_type: bytes, payload: bytes):
         """
         Routes the unescaped, CRC-verified packet payload to the state machine logic.
@@ -41,23 +137,43 @@ class HSLinkSession:
             else:
                 log.info(f"[CHAT/M2M] {payload!r}")
                 
+        elif pkt_type == PACK_READY or pkt_type == PACK_READY_RECV:
+            if self.state == "INIT":
+                self.state = "TRANSFERRING"
+                log.info("Handshake sync complete. Connection established.")
+                
+        elif pkt_type == PACK_ACK_BLOCK:
+            seq = SequencePacket.unpack(payload)
+            if seq['batch'] == self.batch_index:
+                ack_block = seq['block']
+                # Remove the acknowledged block and any older blocks in-flight
+                cleared = [k for k in self.unacked_blocks.keys() if k <= ack_block]
+                for k in cleared:
+                    del self.unacked_blocks[k]
+
+        elif pkt_type == PACK_NAK_BLOCK:
+            seq = SequencePacket.unpack(payload)
+            if seq['batch'] == self.batch_index:
+                nak_block = seq['block']
+                if nak_block in self.unacked_blocks:
+                    log.warning(f"Received NAK for block {nak_block}. Resending.")
+                    self.framer.send_packet(PACK_DATA_BLOCK_SMD, self.unacked_blocks[nak_block])
+                
         elif pkt_type == PACK_OPEN_FILE:
             header = FileHeaderPacket.unpack(payload)
             log.info(f"Peer requested to open file: {header['name'].decode('utf-8', 'ignore')}")
-            
-        elif pkt_type == PACK_READY:
-            log.info("Received Handshake: READY (R)")
-            
-        elif pkt_type == PACK_READY_RECV:
-            log.info("Received Handshake: READY_RECV (Q)")
             
         else:
             log.debug(f"Unhandled packet type: {pkt_type!r} length: {len(payload)}")
 
     def loop(self):
         """
-        Blocks and runs the session until carrier is lost (socket/pipe closed).
+        Blocks and runs the session until carrier is lost or session naturally completes.
         """
-        # transport.idle() returns True as long as the pipe is alive
         while self.transport.idle(timeout=0.01):
             self.step()
+            
+            # If we've successfully finished our side of the send, sleep briefly to flush and exit.
+            if self.state == "DONE" and not self.files_to_send and not self.current_file:
+                time.sleep(0.5)
+                break

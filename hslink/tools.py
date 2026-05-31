@@ -30,3 +30,17 @@ def crc32(data, crc=0):
             else:
                 crc >>= 1
     return crc ^ 0xFFFFFFFF
+
+import time
+
+def unix_to_dos_time(timestamp: float) -> int:
+    """
+    Converts a Unix timestamp to a 32-bit DOS packed ftime.
+    High 16 bits: Date (YYYYYYYM MMMDDDDD)
+    Low 16 bits: Time (HHHHHMMM MMMSSSSS)
+    """
+    t = time.localtime(timestamp)
+    year = max(0, t.tm_year - 1980)
+    dos_date = (year << 9) | (t.tm_mon << 5) | t.tm_mday
+    dos_time = (t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec // 2)
+    return (dos_date << 16) | dos_time

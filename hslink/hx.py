@@ -18,6 +18,9 @@ def main():
     transport = StdioTransport()
     session = HSLinkSession(transport)
     
+    if args.files:
+        session.add_files(args.files)
+        
     if args.chat:
         session.send_chat(args.chat.encode('utf-8'))
         # Give the OS pipe a moment to flush the outbound buffer
