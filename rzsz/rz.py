@@ -302,14 +302,14 @@ def main():
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer interrupted by user.\r\n")
                                 # Send 5 CAN bytes to tell remote to abort
                                 try:
-                                    wrapper_putc(bytes([ZDLE]) * 5, 1)
+                                    z.abort()
                                 except Exception:
                                     pass
                                 success = False
                             except Exception as e:
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer failed with error: {e}\r\n")
                                 try:
-                                    wrapper_putc(bytes([ZDLE]) * 5, 1)
+                                    z.abort()
                                 except Exception:
                                     pass
                                 success = False
@@ -363,14 +363,14 @@ def main():
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer interrupted by user.\r\n")
                                 # Send 5 CAN bytes to tell remote to abort
                                 try:
-                                    wrapper_putc(bytes([ZDLE]) * 5, 1)
+                                    z.abort()
                                 except Exception:
                                     pass
                                 count = 0
                             except Exception as e:
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer failed with error: {e}\r\n")
                                 try:
-                                    wrapper_putc(bytes([ZDLE]) * 5, 1)
+                                    z.abort()
                                 except Exception:
                                     pass
                                 count = 0

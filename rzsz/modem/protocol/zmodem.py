@@ -24,6 +24,15 @@ class ZMODEM(Modem):
         self.utf8 = utf8
 
 
+    def abort(self, timeout=1):
+        """Send standard ZMODEM abort sequence (5 CAN bytes)."""
+        try:
+            for _ in range(5):
+                self.putc(bytes([0x18]), timeout)
+            self.putc(bytes([0x08, 0x08, 0x08, 0x08, 0x08]), timeout)
+        except Exception:
+            pass
+
     def send(self, files, retry=16, timeout=60, overwrite=False):
         '''
         Send one or more files using ZMODEM protocol.
@@ -300,7 +309,7 @@ class ZMODEM(Modem):
         if char == b'':
             return const.TIMEOUT
         if char is not const.TIMEOUT:
-            char_val = ord(char)
+            char_val = char[0] if isinstance(char, bytes) else ord(char)
             if char_val == 0x18:
                 self._can_count = getattr(self, '_can_count', 0) + 1
                 if self._can_count >= 5:

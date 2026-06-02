@@ -113,9 +113,19 @@ def main():
             try:
                 success = z.send(args.files, overwrite=True)
             except KeyboardInterrupt:
-                print("\r\n[PyZMODEM] Transfer interrupted by user.\r\n", file=sys.stderr)
+                sys.stderr.write(f"\r\n[PyZMODEM] Transfer interrupted by user.\r\n")
                 try:
-                    putc(bytes([ZDLE]) * 5, 1)
+                    z.abort()
+                except Exception:
+                    pass
+                success = False
+            except Exception as e:
+                import traceback
+                if args.debug:
+                    traceback.print_exc(file=sys.stderr)
+                sys.stderr.write(f"\r\n[PyZMODEM] Transfer failed with error: {e}\r\n")
+                try:
+                    z.abort()
                 except Exception:
                     pass
                 success = False
