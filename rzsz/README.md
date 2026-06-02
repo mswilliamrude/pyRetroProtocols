@@ -30,3 +30,17 @@ The ultimate workflow looks like this:
 - [x] Implement ZMODEM reverse-request capability (sz/rz asking the local wrapper to UPLOAD a file to the remote host).
 - [x] Verify bidirectional transfers (upload and download) work seamlessly over the PTY wrapper against both Python and C (`lrzsz`) clients.
 - [x] Clean up the `modem` package to be a standalone, robust Python 3 library.
+
+## All-in-One (AIO) Scripts
+
+To make deployment to remote servers as easy as possible without needing to install the entire `modem` python package, this repository provides `szaio.py` and `rzaio.py`. These are self-contained, single-file scripts that have all the dependencies injected into them.
+
+### Generating the AIO Scripts
+The AIO scripts are built using the `utils/build_aio.py` script. This script automatically reads the required modules from the `modem` package (such as `const.py`, `error.py`, `tools.py`, `base.py`, `utf8.py`, and `protocol/zmodem.py`), strips out relative imports, and concatenates them with the main `sz.py` and `rz.py` entrypoints.
+
+To regenerate `szaio.py` and `rzaio.py` after making changes to the codebase, simply run:
+```bash
+python3 utils/build_aio.py
+```
+
+This will output the updated single-file standalone scripts in the root of the project. These can be easily copied to remote hosts using a simple base64 `cat` pipeline without needing to `pip install` or transfer a zip file.
