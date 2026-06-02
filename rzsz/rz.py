@@ -167,6 +167,9 @@ def main():
                         break
                     if not data:
                         break
+                        
+                    if args.debug:
+                        logging.debug(f"PTY READ: {repr(data)}")
                     
                     snoop_buffer.extend(data)
                     if len(snoop_buffer) > 4096:
