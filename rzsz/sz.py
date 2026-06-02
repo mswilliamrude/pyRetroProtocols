@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
     parser.add_argument("-c", "--compress", action="store_true", help="Force inline ZLIB compression if supported by receiver.")
     parser.add_argument("-e", "--escape", action="store_true", help="Escape all control characters (safe for sudo/use_pty wrappers).")
+    parser.add_argument("-u", "--utf8", action="store_true", help="Quoted-Printable encode the stream to survive Bastion UTF-8 proxies.")
     parser.add_argument("-y", "--overwrite", action="store_true", help="Force the receiver to overwrite existing files instead of resuming.")
     parser.add_argument("--zdle", type=str, help="Override ZDLE byte (hex string, e.g. 1d). Useful if Bastion/SSH strips 0x18.")
     args = parser.parse_args()
@@ -89,7 +90,7 @@ def main():
         except termios.error:
             pass
         
-        z = ZMODEM(getc, putc, compress=args.compress, escape_all=args.escape)
+        z = ZMODEM(getc, putc, compress=args.compress, escape_all=args.escape, utf8=args.utf8)
         
         if args.request:
             # We are receiving the file we just requested

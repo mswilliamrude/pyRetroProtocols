@@ -6,6 +6,7 @@ CORE_FILES = [
     'modem/error.py',
     'modem/tools.py',
     'modem/base.py',
+    'modem/utf8.py',
     'modem/protocol/zmodem.py'
 ]
 

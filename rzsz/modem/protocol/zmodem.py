@@ -6,17 +6,22 @@ from modem import const
 from modem.tools import log
 
 
+from modem.utf8 import QPStreamEncoder, QPStreamDecoder
+
 class ZMODEM(Modem):
     '''
-    ZMODEM protocol implementation, expects an object to read from and an
-    object to write to.
+    ZMODEM protocol implementation.
     '''
-    
-    def __init__(self, getc, putc, progress_callback=None, compress=False, escape_all=False):
+
+    def __init__(self, getc, putc, progress_callback=None, compress=False, escape_all=False, utf8=False):
+        if utf8:
+            putc = QPStreamEncoder(putc).putc
+            getc = QPStreamDecoder(getc).getc
         super().__init__(getc, putc)
         self.progress_callback = progress_callback
         self.compress_enabled = compress
         self.escape_all = escape_all
+        self.utf8 = utf8
 
 
     def send(self, files, retry=16, timeout=60, overwrite=False):

@@ -72,6 +72,12 @@ def main():
     )
     
     parser.add_argument(
+        '-u', '--utf8',
+        action='store_true',
+        help="Quoted-Printable encode the stream to survive Bastion UTF-8 proxies"
+    )
+    
+    parser.add_argument(
         '--zdle',
         type=str,
         help="Override ZDLE byte (hex string, e.g. 1d). Useful if Bastion/SSH strips 0x18."
@@ -289,7 +295,7 @@ def main():
                                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                                 except termios.error:
                                     pass
-                            z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=upload_progress, compress=args.compress, escape_all=args.escape)
+                            z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=upload_progress, compress=args.compress, escape_all=args.escape, utf8=args.utf8)
                             try:
                                 success = z.send([upload_path], overwrite=True)
                             except KeyboardInterrupt:
@@ -350,7 +356,7 @@ def main():
                                 except termios.error:
                                     pass
                             sys.stderr.write("[PyZMODEM] Tip: Press Ctrl+C to abort the transfer.\r\n")
-                            z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=progress, compress=args.compress, escape_all=args.escape)
+                            z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=progress, compress=args.compress, escape_all=args.escape, utf8=args.utf8)
                             try:
                                 count = z.recv(args.directory)
                             except KeyboardInterrupt:
@@ -431,7 +437,7 @@ def main():
             except termios.error:
                 pass
             
-            z = ZMODEM(getc, putc, compress=args.compress, escape_all=args.escape)
+            z = ZMODEM(getc, putc, compress=args.compress, escape_all=args.escape, utf8=args.utf8)
             
             # Start receiver loop
             # The recv() method in xyzmodem returns the number of files received.
