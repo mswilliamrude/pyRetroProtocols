@@ -288,12 +288,7 @@ class ZMODEM(Modem):
                 return 0xff
             else:
                 # Escape sequence
-                if char & 0x60 == 0x40:
-                    return char ^ 0x40
-                log.error(f"Invalid ZDLE sequence: ZDLE followed by 0x{char:02x}")
-                # Return the literal character, or drop it? The spec says drop it or return it.
-                # Let's return it unescaped so we don't return None and crash!
-                return char
+                return char ^ 0x40
 
     def _recv_raw(self, timeout):
         char = self.getc(1, timeout)
@@ -781,9 +776,6 @@ class ZMODEM(Modem):
             buf.extend(('%x' % (char & 0x0f)).encode('ascii'))
 
         # Transmit the CRC
-        mine = self.calc_crc16(chr(0), mine)
-        mine = self.calc_crc16(chr(0), mine)
-        
         crc1 = mine >> 0x08
         buf.extend(('%x' % (crc1 >> 0x04)).encode('ascii'))
         buf.extend(('%x' % (crc1 & 0x0f)).encode('ascii'))

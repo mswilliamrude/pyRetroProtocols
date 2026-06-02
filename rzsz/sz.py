@@ -17,12 +17,17 @@ from modem.protocol.zmodem import ZMODEM
 def getc(size, timeout=1):
     r, _, _ = select.select([sys.stdin.fileno()], [], [], timeout)
     if r:
-        return os.read(sys.stdin.fileno(), size)
+        data = os.read(sys.stdin.fileno(), size)
+        if logging.getLogger().isEnabledFor(logging.DEBUG) and data:
+            logging.debug(f"STDIN READ: {data!r}")
+        return data
     return b''
 
 def putc(data, timeout=1):
     if isinstance(data, str):
         data = data.encode('latin1')
+    if logging.getLogger().isEnabledFor(logging.DEBUG) and data:
+        logging.debug(f"STDOUT WRITE: {data!r}")
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
 
@@ -37,7 +42,14 @@ def main():
     parser.add_argument("-c", "--compress", action="store_true", help="Force inline ZLIB compression if supported by receiver.")
     parser.add_argument("-e", "--escape", action="store_true", help="Escape all control characters (safe for sudo/use_pty wrappers).")
     parser.add_argument("-y", "--overwrite", action="store_true", help="Force the receiver to overwrite existing files instead of resuming.")
+    parser.add_argument("--zdle", type=str, help="Override ZDLE byte (hex string, e.g. 1d). Useful if Bastion/SSH strips 0x18.")
     args = parser.parse_args()
+
+    if args.zdle:
+        import modem.const
+        global ZDLE
+        modem.const.ZDLE = int(args.zdle, 16)
+        ZDLE = int(args.zdle, 16)
 
     import logging
     log_level = logging.DEBUG if args.debug else logging.ERROR
@@ -59,7 +71,9 @@ def main():
 
     # Save tty state
     fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
+    old_settings = None
+    if os.isatty(fd):
+        old_settings = termios.tcgetattr(fd)
     
     if args.request:
         # Emit our special request signature to tell the local wrapper to send us a file
@@ -70,7 +84,8 @@ def main():
         # Set raw mode
         import tty
         try:
-            tty.setraw(fd)
+            if os.isatty(fd):
+                tty.setraw(fd)
         except termios.error:
             pass
         
@@ -83,7 +98,7 @@ def main():
             except KeyboardInterrupt:
                 print("\r\n[PyZMODEM] Transfer interrupted by user.\r\n", file=sys.stderr)
                 try:
-                    putc(b'\x18\x18\x18\x18\x18', 1)
+                    putc(bytes([modem.const.ZDLE]) * 5, 1)
                 except Exception:
                     pass
                 count = 0
@@ -99,7 +114,7 @@ def main():
             except KeyboardInterrupt:
                 print("\r\n[PyZMODEM] Transfer interrupted by user.\r\n", file=sys.stderr)
                 try:
-                    putc(b'\x18\x18\x18\x18\x18', 1)
+                    putc(bytes([modem.const.ZDLE]) * 5, 1)
                 except Exception:
                     pass
                 success = False
@@ -109,10 +124,11 @@ def main():
             else:
                 print("\r\nTransfer failed.\r\n", file=sys.stderr)
     finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        except termios.error:
-            pass
+        if old_settings is not None:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except termios.error:
+                pass
 
 if __name__ == "__main__":
     main()

@@ -72,12 +72,24 @@ def main():
     )
     
     parser.add_argument(
+        '--zdle',
+        type=str,
+        help="Override ZDLE byte (hex string, e.g. 1d). Useful if Bastion/SSH strips 0x18."
+    )
+    
+    parser.add_argument(
         'command',
         nargs=argparse.REMAINDER,
         help="Optional command to run in a PTY wrapper (e.g. ssh user@host)"
     )
     
     args = parser.parse_args()
+    
+    if args.zdle:
+        import modem.const
+        global ZDLE
+        modem.const.ZDLE = int(args.zdle, 16)
+        ZDLE = int(args.zdle, 16)
     
     import logging
     log_level = logging.DEBUG if args.debug else logging.ERROR
@@ -175,13 +187,20 @@ def main():
                     if len(snoop_buffer) > 4096:
                         snoop_buffer = snoop_buffer[-4096:]
                         
-                    # Check for ZMODEM signature **\x18B00 (ZRQINIT) or **\x18B01 (ZRINIT)
+                    # Check for ZMODEM signature
                     # lsz sends "rz\r**\x18B00"
                     idx = -1
                     is_upload = False
                     upload_filename = ""
                     
-                    req_match = re.search(rb'rz-request:([^\r\n]+)\r*\n.*?\*\*\x18B0[01]', snoop_buffer, re.DOTALL)
+                    import modem.const
+                    zdle_char = bytes([modem.const.ZDLE])
+                    zrqinit_sig = b'**' + zdle_char + b'B00'
+                    zrinit_sig  = b'**' + zdle_char + b'B01'
+                    
+                    req_pattern = b'rz-request:([^\r\n]+)\r*\n.*?\\*\\*' + re.escape(zdle_char) + b'B0[01]'
+                    req_match = re.search(req_pattern, snoop_buffer, re.DOTALL)
+                    
                     if req_match:
                         is_upload = True
                         upload_filename = req_match.group(1).decode('utf-8')
@@ -191,46 +210,43 @@ def main():
                             idx = data.find(req_str)
                         else:
                             # It straddled a chunk boundary, just use the end
-                            idx_00 = data.find(b'**\x18B00')
-                            idx_01 = data.find(b'**\x18B01')
+                            idx_00 = data.find(zrqinit_sig)
+                            idx_01 = data.find(zrinit_sig)
                             idx = max(idx_00, idx_01)
                             if idx == -1:
                                 idx = 0
-                    elif b'**\x18B00' in snoop_buffer or b'**\x18B01' in snoop_buffer:
-                        if b'**\x18B00' in data:
-                            idx = data.find(b'**\x18B00')
-                            # lrzsz sends "rz\r" before the signature, intercept it too
-                            if idx >= 3 and data[idx-3:idx] == b'rz\r':
-                                idx -= 3
-                            logging.debug(f"Found **\\x18B00 at index {idx}")
-                        elif b'**\x18B01' in data:
-                            idx = data.find(b'**\x18B01')
-                            if idx >= 3 and data[idx-3:idx] == b'rz\r':
-                                idx -= 3
-                            logging.debug(f"Found **\\x18B01 at index {idx}")
+                    elif zrqinit_sig in snoop_buffer or zrinit_sig in snoop_buffer:
+                        if zrqinit_sig in data:
+                            idx = data.find(zrqinit_sig)
+                            # Truncate snoop buffer up to idx
+                            snoop_buffer = snoop_buffer[:snoop_buffer.find(zrqinit_sig) + len(zrqinit_sig)]
+                            if args.debug:
+                                logging.debug(f"Found **\\x{modem.const.ZDLE:02x}B00 at index {idx}")
+                        elif zrinit_sig in data:
+                            idx = data.find(zrinit_sig)
+                            # Truncate snoop buffer up to idx
+                            snoop_buffer = snoop_buffer[:snoop_buffer.find(zrinit_sig) + len(zrinit_sig)]
+                            if args.debug:
+                                logging.debug(f"Found **\\x{modem.const.ZDLE:02x}B01 at index {idx}")
                         else:
                             idx = 0
-                        
+                            
                     if idx != -1:
-                        # Write data before the signature to terminal
-                        if idx > 0:
-                            os.write(stdout_fd, data[:idx])
-                            
-                        # Reconstruct zmodem_buffer from snoop_buffer to ensure we don't lose the start
-                        # of the signature if it was split across os.read chunks.
-                        sig_str = b'**\x18B01' if (is_upload or b'**\x18B01' in snoop_buffer) else b'**\x18B00'
-                        sig_idx = snoop_buffer.find(sig_str)
-                        if sig_idx == -1: 
-                            sig_idx = snoop_buffer.find(b'**\x18B00')
-                            
-                        if sig_idx >= 3 and snoop_buffer[sig_idx-3:sig_idx] == b'rz\r':
-                            sig_idx -= 3
-                            
-                        zmodem_buffer = snoop_buffer[max(0, sig_idx):]
+                        # We found it! Now we need to start intercepting.
                         
-                        if is_upload and req_str in snoop_buffer:
-                            # Skip the request string and get to the **\x18B01
-                            zmodem_buffer = snoop_buffer[snoop_buffer.find(b'**\x18B01'):]
+                        # First, if the signature was split across a chunk boundary, 
+                        # ensure we pass the correct initial buffer to the protocol.
+                        sig_str = zrinit_sig if (is_upload or zrinit_sig in snoop_buffer) else zrqinit_sig
+                        
+                        if not is_upload:
+                            sig_idx = snoop_buffer.find(zrqinit_sig)
+                            if sig_idx != -1:
+                                zmodem_buffer = snoop_buffer[sig_idx:]
+                            else:
+                                zmodem_buffer = data[idx:]
+                        else:
+                            # Skip the request string and get to the **\x1dB01
+                            zmodem_buffer = snoop_buffer[snoop_buffer.find(zrinit_sig):]
                             
                         def wrapper_getc(size, timeout=1):
                             nonlocal zmodem_buffer
@@ -272,10 +288,11 @@ def main():
                                 sys.stderr.flush()
 
                             # Temporarily restore normal terminal mode so Ctrl+C works to interrupt
-                            try:
-                                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                            except termios.error:
-                                pass
+                            if old_settings is not None:
+                                try:
+                                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                                except termios.error:
+                                    pass
                             z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=upload_progress, compress=args.compress, escape_all=args.escape)
                             try:
                                 success = z.send([upload_path], overwrite=True)
@@ -283,7 +300,7 @@ def main():
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer interrupted by user.\r\n")
                                 # Send 5 CAN bytes to tell remote to abort
                                 try:
-                                    wrapper_putc(b'\x18\x18\x18\x18\x18', 1)
+                                    wrapper_putc(bytes([modem.const.ZDLE]) * 5, 1)
                                 except Exception:
                                     pass
                                 success = False
@@ -324,10 +341,11 @@ def main():
                                 sys.stderr.flush()
     
                             # Temporarily restore normal terminal mode so Ctrl+C works to interrupt
-                            try:
-                                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                            except termios.error:
-                                pass
+                            if old_settings is not None:
+                                try:
+                                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                                except termios.error:
+                                    pass
                             sys.stderr.write("[PyZMODEM] Tip: Press Ctrl+C to abort the transfer.\r\n")
                             z = ZMODEM(wrapper_getc, wrapper_putc, progress_callback=progress, compress=args.compress, escape_all=args.escape)
                             try:
@@ -336,7 +354,7 @@ def main():
                                 sys.stderr.write(f"\r\n[PyZMODEM] Transfer interrupted by user.\r\n")
                                 # Send 5 CAN bytes to tell remote to abort
                                 try:
-                                    wrapper_putc(b'\x18\x18\x18\x18\x18', 1)
+                                    wrapper_putc(bytes([modem.const.ZDLE]) * 5, 1)
                                 except Exception:
                                     pass
                                 count = 0
@@ -412,7 +430,7 @@ def main():
             except KeyboardInterrupt:
                 print("\r\n[PyZMODEM] Transfer interrupted by user.\r\n", file=sys.stderr)
                 try:
-                    putc(b'\x18\x18\x18\x18\x18', 1)
+                    putc(bytes([modem.const.ZDLE]) * 5, 1)
                 except Exception:
                     pass
                 count = 0
