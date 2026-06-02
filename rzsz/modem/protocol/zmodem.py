@@ -12,10 +12,11 @@ class ZMODEM(Modem):
     object to write to.
     '''
     
-    def __init__(self, getc, putc, progress_callback=None, compress=False):
+    def __init__(self, getc, putc, progress_callback=None, compress=False, escape_all=False):
         super().__init__(getc, putc)
         self.progress_callback = progress_callback
         self.compress_enabled = compress
+        self.escape_all = escape_all
 
 
     def send(self, files, retry=16, timeout=60, overwrite=False):
@@ -26,6 +27,9 @@ class ZMODEM(Modem):
         import os
         
         # 1. Send ZRQINIT
+        # Many terminal emulators (SecureCRT, iTerm2, etc.) require "rz\r" before the ZRQINIT 
+        # signature to auto-trigger the local ZMODEM receiver.
+        self.putc(b'rz\r', timeout)
         self._send_hex_header([const.ZRQINIT, 0, 0, 0, 0], timeout)
         
         # 2. Wait for ZRINIT
@@ -39,6 +43,10 @@ class ZMODEM(Modem):
             if res and res[0] == const.ZRINIT:
                 header = res
                 peer_zf1 = header[const.ZP2]
+                peer_zf0 = header[const.ZP3]
+                if peer_zf0 & const.ZF0_ESCCTL:
+                    log.info("Receiver requested control character escaping (ESCCTL)")
+                    self.escape_all = True
                 break
                 
         can_zlib = (peer_zf1 & const.ZF1_CANZLIB) != 0 and self.compress_enabled
@@ -122,6 +130,17 @@ class ZMODEM(Modem):
                     total_sent += len(chunk)
                     if self.progress_callback:
                         self.progress_callback(filename, size, total_sent)
+                        
+                    # Non-blocking check for receiver abort (CAN) or other interruptions
+                    char = self.getc(1, 0)
+                    if char:
+                        if char == bytes([const.ZDLE]):
+                            self._can_count = getattr(self, '_can_count', 0) + 1
+                            if self._can_count >= 5:
+                                log.info("Received 5 consecutive CAN (Ctrl+X), aborting")
+                                raise KeyboardInterrupt("Transfer cancelled by peer")
+                        else:
+                            self._can_count = 0
             
             # Send ZEOF
             self._send_hex_header([const.ZEOF, size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff], timeout)
@@ -271,7 +290,10 @@ class ZMODEM(Modem):
                 # Escape sequence
                 if char & 0x60 == 0x40:
                     return char ^ 0x40
-                break
+                log.error(f"Invalid ZDLE sequence: ZDLE followed by 0x{char:02x}")
+                # Return the literal character, or drop it? The spec says drop it or return it.
+                # Let's return it unescaped so we don't return None and crash!
+                return char
 
     def _recv_raw(self, timeout):
         char = self.getc(1, timeout)
@@ -705,16 +727,26 @@ class ZMODEM(Modem):
     def _send(self, char, timeout, esc=True):
         if char == const.ZDLE:
             self._send_esc(char, timeout)
-        elif char in [0x8d, 0x0d] or not esc:
-            self.putc(bytes([char]), timeout)
         elif char in [0x10, 0x90, 0x11, 0x91, 0x13, 0x93]:
             self._send_esc(char, timeout)
+        elif char in [0x0d, 0x0a]:
+            # ALWAYS escape CR and LF to survive PTY translations (ONLCR, ICRNL, IGNCR)
+            self._send_esc(char, timeout)
+        elif getattr(self, 'escape_all', False) and (char < 0x20 or char == 0x7f):
+            self._send_esc(char, timeout)
+        elif char in [0x8d] or not esc:
+            self.putc(bytes([char]), timeout)
         else:
             self.putc(bytes([char]), timeout)
 
     def _send_esc(self, char, timeout):
         self.putc(bytes([const.ZDLE]), timeout)
-        self.putc(bytes([char ^ 0x40]), timeout)
+        if char == 0x7f:
+            self.putc(bytes([const.ZRUB0]), timeout)
+        elif char == 0xff:
+            self.putc(bytes([const.ZRUB1]), timeout)
+        else:
+            self.putc(bytes([char ^ 0x40]), timeout)
 
     def _send_znak(self, pos, timeout):
         self._send_pos_header(const.ZNAK, pos, timeout)
@@ -739,28 +771,35 @@ class ZMODEM(Modem):
 
     def _send_hex_header(self, header, timeout):
         log.debug(f'Sending hex header: {header}')
-        self.putc(bytes([const.ZPAD]), timeout)
-        self.putc(bytes([const.ZPAD]), timeout)
-        self.putc(bytes([const.ZDLE]), timeout)
-        self.putc(bytes([const.ZHEX]), timeout)
+        buf = bytearray([const.ZPAD, const.ZPAD, const.ZDLE, const.ZHEX])
         mine = 0
 
         # Update CRC
         for char in header:
             mine = self.calc_crc16(chr(char), mine)
-            self._send_hex(char, timeout)
+            buf.extend(('%x' % (char >> 0x04)).encode('ascii'))
+            buf.extend(('%x' % (char & 0x0f)).encode('ascii'))
 
         # Transmit the CRC
-        self._send_hex(mine >> 0x08, timeout)
-        self._send_hex(mine, timeout)
+        mine = self.calc_crc16(chr(0), mine)
+        mine = self.calc_crc16(chr(0), mine)
+        
+        crc1 = mine >> 0x08
+        buf.extend(('%x' % (crc1 >> 0x04)).encode('ascii'))
+        buf.extend(('%x' % (crc1 & 0x0f)).encode('ascii'))
+        
+        crc2 = mine & 0xff
+        buf.extend(('%x' % (crc2 >> 0x04)).encode('ascii'))
+        buf.extend(('%x' % (crc2 & 0x0f)).encode('ascii'))
 
-        self.putc(b'\r', timeout)
-        self.putc(b'\n', timeout)
-        self.putc(const.XON, timeout)
+        buf.extend(b'\r\n')
+        buf.extend(const.XON)
+            
+        self.putc(bytes(buf), timeout)
 
     def _send_zrinit(self, timeout):
         log.debug('Sending ZRINIT header')
         zf1 = const.ZF1_CANZLIB if self.compress_enabled else 0
         header = [const.ZRINIT, 0, 0, zf1, 4 | const.ZF0_CANFDX |
-                  const.ZF0_CANOVIO | const.ZF0_CANFC32]
+                  const.ZF0_CANOVIO | const.ZF0_CANFC32 | const.ZF0_ESCCTL]
         self._send_hex_header(header, timeout)
