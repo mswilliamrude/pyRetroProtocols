@@ -1,0 +1,22 @@
+# Generated AIO scripts (built by utils/make_aio.py and utils/build_zmodem_aio.py)
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Test artifacts
+*.log
+logs/
+temp_downloads/
+pipe[0-9]*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,208 @@
+{
+  "session_overview": {
+    "session_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+    "timestamp_start": "2026-06-03T13:15:21.740727+00:00",
+    "timestamp_end": "2026-06-03T13:18:58.005501+00:00",
+    "total_time_seconds": 216.26,
+    "working_directory": "/home/azureuser/git/pyzmodem",
+    "community_totals": {
+      "combined_tokens": {
+        "input": 16733,
+        "output": 3100,
+        "total": 19833
+      },
+      "combined_cost_usd": 0.0,
+      "total_errors_reported": 0,
+      "total_security_violations": 0
+    }
+  },
+  "agents": [
+    {
+      "logical_agent_name": "subagent-tester.0",
+      "agent_uuid": "0111289e-39e6-5146-8375-28662aa1bdb8",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:15:21.740727+00:00",
+      "timestamp_end": "2026-06-03T13:15:21.740727+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gpt-4o-mini"
+      ],
+      "tiers": [
+        "free"
+      ],
+      "tokens": {
+        "input": 1423,
+        "output": 1496,
+        "total": 2919
+      },
+      "cost_usd": 0.0,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    },
+    {
+      "logical_agent_name": "subagent-tester.1",
+      "agent_uuid": "5c5df0e1-2304-55ce-b9b7-400da8e337f3",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:18:06.539905+00:00",
+      "timestamp_end": "2026-06-03T13:18:06.539905+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gpt-4o-mini"
+      ],
+      "tiers": [
+        "free"
+      ],
+      "tokens": {
+        "input": 7663,
+        "output": 806,
+        "total": 8469
+      },
+      "cost_usd": 0.0,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    },
+    {
+      "logical_agent_name": "subagent-tester.2",
+      "agent_uuid": "5d6fba84-ef1c-54a1-a2fc-be60f5754da4",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:18:58.005501+00:00",
+      "timestamp_end": "2026-06-03T13:18:58.005501+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gpt-4o-mini"
+      ],
+      "tiers": [
+        "free"
+      ],
+      "tokens": {
+        "input": 7647,
+        "output": 798,
+        "total": 8445
+      },
+      "cost_usd": 0.0,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    }
+  ],
+  "model_switches": []
+}
+
+{
+  "session_overview": {
+    "session_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+    "timestamp_start": "2026-06-03T13:24:46.290589+00:00",
+    "timestamp_end": "2026-06-03T13:26:12.439210+00:00",
+    "total_time_seconds": 86.15,
+    "working_directory": "/home/azureuser/git/pyzmodem",
+    "community_totals": {
+      "combined_tokens": {
+        "input": 20855,
+        "output": 4933,
+        "total": 25788
+      },
+      "combined_cost_usd": 0.050734,
+      "total_errors_reported": 0,
+      "total_security_violations": 0
+    }
+  },
+  "agents": [
+    {
+      "logical_agent_name": "gemini-tester.0",
+      "agent_uuid": "1b20635f-f47b-5fbb-bd5e-dfdfe1500b4d",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:24:46.290589+00:00",
+      "timestamp_end": "2026-06-03T13:24:46.290589+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gemini-3.1-pro-preview"
+      ],
+      "tiers": [
+        "token_based"
+      ],
+      "tokens": {
+        "input": 1768,
+        "output": 2436,
+        "total": 4204
+      },
+      "cost_usd": 0.01439,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    },
+    {
+      "logical_agent_name": "gemini-tester.1",
+      "agent_uuid": "f6f20b44-5b98-5569-8a08-1e6f176354db",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:25:17.786533+00:00",
+      "timestamp_end": "2026-06-03T13:25:17.786533+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gemini-3.1-pro-preview"
+      ],
+      "tiers": [
+        "token_based"
+      ],
+      "tokens": {
+        "input": 9560,
+        "output": 1156,
+        "total": 10716
+      },
+      "cost_usd": 0.01773,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    },
+    {
+      "logical_agent_name": "gemini-tester.2",
+      "agent_uuid": "ade71af0-317f-50c7-bf4e-d59a9bd7420e",
+      "parent_uuid": "ddf97f2d-59f3-4d05-8a07-0c90e85c5ddd",
+      "relationship": "child",
+      "timestamp_start": "2026-06-03T13:26:12.439210+00:00",
+      "timestamp_end": "2026-06-03T13:26:12.439210+00:00",
+      "total_time_seconds": 0.0,
+      "models": [
+        "gemini-3.1-pro-preview"
+      ],
+      "tiers": [
+        "token_based"
+      ],
+      "tokens": {
+        "input": 9527,
+        "output": 1341,
+        "total": 10868
+      },
+      "cost_usd": 0.018614,
+      "errors_reported": 0,
+      "accuracy_rating_pct": 100,
+      "security_audit": {
+        "approved_dirs": [],
+        "denied_dirs": []
+      }
+    }
+  ],
+  "model_switches": []
+}
+

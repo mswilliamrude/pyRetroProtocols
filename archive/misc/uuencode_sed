@@ -1,0 +1,2 @@
+cat /tmp/data  | sed 's/.\{76\}/&\n/g' | openssl enc -base64 -d | zcat > /usr/local/b
+in/sz.py
