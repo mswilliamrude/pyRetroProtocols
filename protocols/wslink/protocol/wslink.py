@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 import logging
+import traceback
 import zlib
 from ..const import *
 from .structs.structs import FileHeaderPacket, SequencePacket, ResumeVerifyPacket
@@ -61,8 +62,12 @@ class WSLinkSession:
         
         recv_task = asyncio.create_task(self._recv_loop())
         send_task = asyncio.create_task(self._send_loop())
-        
-        await asyncio.gather(recv_task, send_task)
+
+        try:
+            await asyncio.gather(recv_task, send_task)
+        except Exception as e:
+            log.error(f"WSLinkSession loop error: {e}\n{traceback.format_exc()}")
+            self.state = "DONE"
         
     async def _recv_loop(self):
         while self.state != "DONE":
@@ -74,12 +79,21 @@ class WSLinkSession:
                 break
                 
             pkt_type, payload = packet
-            await self._handle_packet(pkt_type, payload)
+
+            try:
+                await self._handle_packet(pkt_type, payload)
+            except Exception as e:
+                log.error(f"Error handling packet type {pkt_type}: {e}\n{traceback.format_exc()}")
             
     async def _send_loop(self):
         while self.state != "DONE":
             if self.state == "TRANSFERRING":
-                await self._pump_sender()
+                try:
+                    await self._pump_sender()
+                except Exception as e:
+                    log.error(f"Sender error: {e}\n{traceback.format_exc()}")
+                    self.state = "DONE"
+
             await asyncio.sleep(0.01)
 
     def _open_next_file(self):
