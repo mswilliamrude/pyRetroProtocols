@@ -88,16 +88,22 @@ class WSLinkSession:
             
     async def _send_loop(self):
         while self.state != "DONE":
+            # Clear BEFORE pump so any events set DURING pump are preserved
+            self._send_event.clear()
+
             if self.state == "TRANSFERRING":
                 try:
                     await self._pump_sender()
                 except Exception as e:
                     log.error(f"Sender error: {e}\n{traceback.format_exc()}")
                     self.state = "DONE"
+                    break
 
-            # Wait for signal (ACK freed window space, state change, etc.)
-            # or timeout for ARQ retransmit check
-            self._send_event.clear()
+            # If an event arrived during pump, loop immediately
+            if self._send_event.is_set():
+                continue
+
+            # Wait for signal or timeout for ARQ retransmit check
             try:
                 await asyncio.wait_for(self._send_event.wait(), timeout=self.arq_timeout)
             except asyncio.TimeoutError:
