@@ -156,8 +156,12 @@ class WSLinkSession:
         if not self.current_file:
             if not self.files_to_send:
                 if not self._sent_z:
-                    log.info("All files transmitted (or none to send). Signaling TRANSMIT_DONE (Z).")
-                    await self.framer.send_packet_immediate(PACK_TRANSMIT_DONE, b"")
+                    # Only send TRANSMIT_DONE if we actually transferred files.
+                    # Sending Z with no files (batch_index=0) causes the peer's
+                    # session to exit, killing the chat channel used for MCP traffic.
+                    if self.batch_index > 0:
+                        log.info("All files transmitted. Signaling TRANSMIT_DONE (Z).")
+                        await self.framer.send_packet_immediate(PACK_TRANSMIT_DONE, b"")
                     self._sent_z = True
                 return
             await self._open_next_file_async()
@@ -418,6 +422,7 @@ class WSLinkSession:
                 
         elif pkt_type == PACK_TRANSMIT_DONE:
             log.info("Peer signaled all files transmitted (Z).")
-            if not self.recv_fd and len(self.unacked_blocks) == 0:
-                log.info("Receive queue empty, transitioning to DONE.")
-                self.state = "DONE"
+            # NOTE: Do NOT transition to DONE here. The chat channel (used for
+            # JSON-RPC MCP traffic in the Unimind router) must remain active
+            # after file transfer completes. Only explicit WebSocket close or
+            # idle timeout should end the session.
